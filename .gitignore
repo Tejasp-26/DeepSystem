@@ -1,5 +1,4 @@
 # compiled binaries
 *.exe
-sentinel
 /bin/
 /dist/
