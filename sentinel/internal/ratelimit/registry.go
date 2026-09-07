@@ -2,37 +2,42 @@ package ratelimit
 
 import "sync"
 
-// Registry holds one TokenBucket per key (e.g. per API client),
-// created lazily on first use.
+// Registry holds one TokenBucket per key (e.g. per API key, per client IP).
+// This lets each caller have their own independent rate limit.
 type Registry struct {
 	mu      sync.Mutex
 	buckets map[string]*TokenBucket
 
-	defaultCapacity float64
-	defaultRefill   float64
+	// defaults used when creating a bucket for a key we haven't seen yet
+	defaultCapacity   int64
+	defaultRefillRate int64
 }
 
-func NewRegistry(capacity, refillRate float64) *Registry {
+func NewRegistry(defaultCapacity, defaultRefillRate int64) *Registry {
 	return &Registry{
-		buckets:         make(map[string]*TokenBucket),
-		defaultCapacity: capacity,
-		defaultRefill:   refillRate,
+		buckets:           make(map[string]*TokenBucket),
+		defaultCapacity:   defaultCapacity,
+		defaultRefillRate: defaultRefillRate,
 	}
 }
 
-func (r *Registry) getOrCreate(key string) *TokenBucket {
+// GetBucket returns the bucket for `key`, creating one with default
+// settings if this is the first time we've seen this key.
+func (r *Registry) GetBucket(key string) *TokenBucket {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	tb, exists := r.buckets[key]
+	b, exists := r.buckets[key]
 	if !exists {
-		tb = NewTokenBucket(r.defaultCapacity, r.defaultRefill)
-		r.buckets[key] = tb
+		b = NewTokenBucket(r.defaultCapacity, r.defaultRefillRate)
+		r.buckets[key] = b
 	}
-	return tb
+	return b
 }
 
-// Allow checks whether a request for `key` should be permitted.
+// Allow is a convenience wrapper: look up (or create) the bucket for
+// key, then check if it allows the request.
 func (r *Registry) Allow(key string) bool {
-	return r.getOrCreate(key).Allow()
+	bucket := r.GetBucket(key)
+	return bucket.Allow()
 }

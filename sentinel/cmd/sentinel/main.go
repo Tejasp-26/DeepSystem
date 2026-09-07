@@ -1,18 +1,23 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net/http"
 
-	"DEEPSYSTEM/sentinal/api"
-	"DEEPSYSTEM/sentinal/internal/ratelimit"
+	"sentinel/internal/api"
+	"sentinel/internal/ratelimit"
+	"sentinel/internal/stats"
 )
 
 func main() {
-	// capacity=5, refillRate=1 token/sec -> burst of 5, then 1 req/sec sustained.
-	registry := ratelimit.NewRegistry(5, 1)
-	mux := api.NewMux(registry)
+	// defaultCapacity=10, defaultRefillRate=2 tokens/sec — tune later.
+	registry := ratelimit.NewRegistry(10, 2)
+	counter := stats.NewExactCounter()
 
-	fmt.Println("Sentinel listening on :8080  (try: curl 'localhost:8080/check?key=user1')")
-	http.ListenAndServe(":8080", mux)
+	server := api.NewServer(registry, counter)
+
+	log.Println("sentinel listening on :8080")
+	if err := http.ListenAndServe(":8080", server.Routes()); err != nil {
+		log.Fatal(err)
+	}
 }

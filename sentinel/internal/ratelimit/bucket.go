@@ -5,17 +5,21 @@ import (
 	"time"
 )
 
-// TokenBucket allows up to `capacity` requests in a burst, refilling
-// at `refillRate` tokens/second.
+// TokenBucket implements the token-bucket rate-limiting algorithm.
+// Picture a bucket that holds up to `capacity` tokens. Tokens refill
+// at a steady rate over time. Every request that wants to proceed
+// must take one token. If the bucket is empty, the request is denied.
 type TokenBucket struct {
-	mu         sync.Mutex
-	capacity   float64
-	tokens     float64
-	refillRate float64
-	lastRefill time.Time
+	mu sync.Mutex
+
+	capacity     int64     // max tokens the bucket can ever hold
+	tokens       int64     // tokens currently available
+	refillRate   int64     // tokens added per second
+	lastRefill   time.Time // last time we topped up the bucket
 }
 
-func NewTokenBucket(capacity, refillRate float64) *TokenBucket {
+// NewTokenBucket creates a bucket that starts full.
+func NewTokenBucket(capacity, refillRate int64) *TokenBucket {
 	return &TokenBucket{
 		capacity:   capacity,
 		tokens:     capacity,
@@ -24,25 +28,47 @@ func NewTokenBucket(capacity, refillRate float64) *TokenBucket {
 	}
 }
 
-// Allow reports whether a request should be permitted right now,
-// and consumes one token if so. Refill + check + decrement all
-// happen inside the same lock on purpose — this is the atomic
-// section Day 2 will ask you to deliberately break.
-func (tb *TokenBucket) Allow() bool {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-
+// refill adds tokens based on how much time has passed since the last
+// refill. Must be called while holding the lock — it mutates shared state.
+func (b *TokenBucket) refill() {
 	now := time.Now()
-	elapsed := now.Sub(tb.lastRefill).Seconds()
-	tb.tokens += elapsed * tb.refillRate
-	if tb.tokens > tb.capacity {
-		tb.tokens = tb.capacity
-	}
-	tb.lastRefill = now
+	elapsed := now.Sub(b.lastRefill).Seconds()
 
-	if tb.tokens >= 1 {
-		tb.tokens--
+	tokensToAdd := int64(elapsed * float64(b.refillRate))
+	if tokensToAdd > 0 {
+		b.tokens += tokensToAdd
+		if b.tokens > b.capacity {
+			b.tokens = b.capacity // never overflow past capacity
+		}
+		b.lastRefill = now
+	}
+}
+
+// Allow reports whether a request may proceed right now, and if so,
+// consumes one token.
+//
+// IMPORTANT: refill, the check (tokens > 0), and the decrement all
+// happen under ONE lock acquisition. This is deliberate — see Day 2's
+// TOCTOU discussion. If check and decrement were two separate locked
+// sections, another goroutine could slip in between them and both
+// callers could be allowed through on a single remaining token.
+func (b *TokenBucket) Allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.refill()
+
+	if b.tokens > 0 {
+		b.tokens--
 		return true
 	}
 	return false
+}
+
+// Tokens returns the current token count — useful for tests/debugging.
+func (b *TokenBucket) Tokens() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill()
+	return b.tokens
 }
